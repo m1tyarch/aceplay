@@ -19,17 +19,6 @@ stop_spinner() {
 	fi
 }
 
-# Complete spinner step with a permanent checkmark line
-done_spinner() {
-	local msg="$1"
-	stop_spinner
-	if [[ -t 2 ]]; then
-		printf '✔ %s\n' "$msg" >&2
-	else
-		echo "✔ $msg" >&2
-	fi
-}
-
 # Display a single in-place status line with animated spinner
 spin() {
 	local msg="$1"
@@ -143,21 +132,23 @@ fi
 stream_url="http://${HOST}:${HTTP_PORT}/ace/getstream?id=${clean_hash}"
 short_hash="${clean_hash:0:10}..."
 
-# Transition cleanly to mpv without leaving stray background spinner output
-done_spinner "Engine ready. Connecting to stream and launching mpv..."
+# Transition cleanly to mpv: stop spinner and clear line completely
+spin "Connecting to stream and launching mpv..."
+sleep 0.2
+stop_spinner
 
 mpv \
 	--no-resume-playback \
+	--save-position-on-quit=no \
 	--title="Ace Stream: ${short_hash}" \
 	--hwdec=vaapi \
 	--profile=fast \
 	--msg-level=ffmpeg=fatal \
 	--cache=yes \
-	--cache-pause-wait=2 \
+	--cache-pause-wait=3 \
 	--force-seekable=yes \
 	--demuxer-max-bytes=200M \
 	--demuxer-readahead-secs=30 \
 	--cache-secs=30 \
-	--audio-buffer=1.0 \
-	--audio-stream-silence=yes \
+	--audio-buffer=0.5 \
 	"$stream_url"
