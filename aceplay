@@ -145,7 +145,8 @@ mpv \
 	--title="Ace Stream: ${short_hash}" \
 	--hwdec=vaapi \
 	--profile=fast \
-	--msg-level=ffmpeg=fatal \
+	--msg-level=ffmpeg=fatal,dec/audio=error \
+	--demuxer-lavf-o=fflags=+genpts \
 	--cache=yes \
 	--cache-pause-wait=3 \
 	--demuxer-max-bytes=200M \
