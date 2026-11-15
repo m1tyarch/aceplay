@@ -6,58 +6,95 @@ HTTP_PORT="${ACESTREAM_PORT:-6878}"
 HOST="localhost"
 container_started=0
 
-# Cleanup handler: stop container on exit or interrupt
+# Cleanup handler: stop container in background on exit if we started it
 cleanup() {
 	if ((container_started)); then
-		echo "Stopping Ace Stream container..."
-		docker stop -t 1 "$CONTAINER_NAME" >/dev/null 2>&1 || true
+		echo "Stopping Ace Stream container in background..."
+		(docker stop -t 1 "$CONTAINER_NAME" >/dev/null 2>&1 &)
 	fi
 }
 trap cleanup EXIT INT TERM
 
-# Get stream input from argument or prompt
+# Function to clean stream hash using pure bash string manipulation
+clean_stream_hash() {
+	local input="$1"
+	# Strip leading/trailing whitespace
+	input="${input#"${input%%[![:space:]]*}"}"
+	input="${input%"${input##*[![:space:]]}"}"
+	# Strip acestream:// URI prefix
+	input="${input#acestream://}"
+	echo "$input"
+}
+
 raw_input="${1:-}"
+
+# Auto-detect from clipboard (Wayland wl-paste or X11 xclip) if no argument provided
+if [[ -z "$raw_input" ]]; then
+	clip_content=""
+	if command -v wl-paste >/dev/null 2>&1; then
+		clip_content="$(wl-paste --no-newline 2>/dev/null || true)"
+	elif command -v xclip >/dev/null 2>&1; then
+		clip_content="$(xclip -selection clipboard -o 2>/dev/null || true)"
+	fi
+
+	candidate="$(clean_stream_hash "$clip_content")"
+	# Check if clipboard contains a valid 40-character hex hash
+	if [[ "$candidate" =~ ^[a-fA-F0-9]{40}$ ]]; then
+		echo "Found Ace Stream hash in clipboard: ${candidate:0:10}..."
+		raw_input="$candidate"
+	fi
+fi
+
+# Fallback to interactive prompt if still empty
 if [[ -z "$raw_input" ]]; then
 	echo -n "Paste Ace Stream HASH or link and press Enter: "
 	read -r raw_input
 fi
 
-# Clean input (strip whitespace and acestream:// prefix)
-clean_hash=$(echo "$raw_input" | sed -e "s/^[ \t]*//" -e "s/[ \t]*$//" -e "s|^acestream://||")
+clean_hash="$(clean_stream_hash "$raw_input")"
 
 if [[ -z "$clean_hash" ]]; then
 	echo "Error: stream hash is empty." >&2
 	exit 1
 fi
 
-echo "Starting Ace Stream engine..."
-if ! docker start "$CONTAINER_NAME" >/dev/null 2>&1; then
-	echo "Error: Docker daemon is not running or container '$CONTAINER_NAME' not found." >&2
-	echo "Make sure Docker is running: sudo systemctl enable --now docker.socket" >&2
-	exit 1
-fi
-container_started=1
-
-# Wait for HTTP API to respond (timeout: 15s)
-attempts=0
-until curl -s "http://${HOST}:${HTTP_PORT}" >/dev/null 2>&1; do
-	sleep 0.5
-	attempts=$((attempts + 1))
-	if ((attempts >= 30)); then
-		echo "Error: Ace Stream engine failed to respond on port ${HTTP_PORT} within 15 seconds." >&2
+# Check if container is already running
+if docker ps --format '{{.Names}}' | grep -qw "^${CONTAINER_NAME}$"; then
+	echo "Ace Stream engine is already running."
+else
+	echo "Starting Ace Stream engine..."
+	if ! docker start "$CONTAINER_NAME" >/dev/null 2>&1; then
+		echo "Error: Docker daemon is not running or container '$CONTAINER_NAME' not found." >&2
+		echo "Make sure Docker is running: sudo systemctl enable --now docker.socket" >&2
 		exit 1
 	fi
-done
+	container_started=1
+
+	# Fast poll HTTP API for readiness (0.1s interval, timeout: 15s)
+	attempts=0
+	until curl -s "http://${HOST}:${HTTP_PORT}" >/dev/null 2>&1; do
+		sleep 0.1
+		attempts=$((attempts + 1))
+		if ((attempts >= 150)); then
+			echo "Error: Ace Stream engine failed to respond on port ${HTTP_PORT} within 15 seconds." >&2
+			exit 1
+		fi
+	done
+fi
 
 stream_url="http://${HOST}:${HTTP_PORT}/ace/getstream?id=${clean_hash}"
+short_hash="${clean_hash:0:10}..."
 
 echo "Starting mpv..."
 mpv \
 	--no-resume-playback \
+	--title="Ace Stream: ${short_hash}" \
 	--hwdec=vaapi \
 	--profile=fast \
 	--msg-level=ffmpeg=fatal \
 	--cache=yes \
+	--cache-pause-wait=2 \
+	--force-seekable=yes \
 	--demuxer-max-bytes=200M \
 	--demuxer-readahead-secs=30 \
 	--cache-secs=30 \
