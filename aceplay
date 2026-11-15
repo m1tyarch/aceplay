@@ -5,11 +5,50 @@ CONTAINER_NAME="${ACESTREAM_CONTAINER:-acestream}"
 HTTP_PORT="${ACESTREAM_PORT:-6878}"
 HOST="localhost"
 container_started=0
+spinner_pid=""
 
-# Cleanup handler: stop container in background on exit if we started it
+# Stop spinner animation, clear line and restore cursor
+stop_spinner() {
+	if [[ -n "$spinner_pid" ]]; then
+		kill "$spinner_pid" 2>/dev/null || true
+		wait "$spinner_pid" 2>/dev/null || true
+		spinner_pid=""
+		if [[ -t 2 ]]; then
+			printf '\r\033[K\e[?25h' >&2
+		fi
+	fi
+}
+
+# Display a single in-place status line with animated spinner
+spin() {
+	local msg="$1"
+	if [[ ! -t 2 ]]; then
+		echo "$msg" >&2
+		return
+	fi
+
+	if [[ -n "$spinner_pid" ]]; then
+		kill "$spinner_pid" 2>/dev/null || true
+		wait "$spinner_pid" 2>/dev/null || true
+	fi
+
+	printf '\e[?25l' >&2
+	(
+		local frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+		local i=0
+		while true; do
+			printf '\r\033[K%s %s' "${frames[i]}" "$msg" >&2
+			i=$(((i + 1) % 10))
+			sleep 0.08
+		done
+	) &
+	spinner_pid=$!
+}
+
+# Cleanup handler: stop spinner and container on exit or interrupt
 cleanup() {
+	stop_spinner
 	if ((container_started)); then
-		echo "Stopping Ace Stream container in background..."
 		(docker stop -t 1 "$CONTAINER_NAME" >/dev/null 2>&1 &)
 	fi
 }
@@ -40,13 +79,15 @@ if [[ -z "$raw_input" ]]; then
 	candidate="$(clean_stream_hash "$clip_content")"
 	# Check if clipboard contains a valid 40-character hex hash
 	if [[ "$candidate" =~ ^[a-fA-F0-9]{40}$ ]]; then
-		echo "Found Ace Stream hash in clipboard: ${candidate:0:10}..."
+		spin "Clipboard hash detected: ${candidate:0:10}..."
 		raw_input="$candidate"
+		sleep 0.2
 	fi
 fi
 
 # Fallback to interactive prompt if still empty
 if [[ -z "$raw_input" ]]; then
+	stop_spinner
 	echo -n "Paste Ace Stream HASH or link and press Enter: "
 	read -r raw_input
 fi
@@ -54,28 +95,34 @@ fi
 clean_hash="$(clean_stream_hash "$raw_input")"
 
 if [[ -z "$clean_hash" ]]; then
+	stop_spinner
 	echo "Error: stream hash is empty." >&2
 	exit 1
 fi
 
+spin "Checking Ace Stream container..."
+
 # Check if container is already running
 if docker ps --format '{{.Names}}' | grep -qw "^${CONTAINER_NAME}$"; then
-	echo "Ace Stream engine is already running."
+	spin "Ace Stream engine running, preparing stream..."
 else
-	echo "Starting Ace Stream engine..."
+	spin "Starting Ace Stream engine..."
 	if ! docker start "$CONTAINER_NAME" >/dev/null 2>&1; then
+		stop_spinner
 		echo "Error: Docker daemon is not running or container '$CONTAINER_NAME' not found." >&2
 		echo "Make sure Docker is running: sudo systemctl enable --now docker.socket" >&2
 		exit 1
 	fi
 	container_started=1
 
+	spin "Connecting to Ace Stream API..."
 	# Fast poll HTTP API for readiness (0.1s interval, timeout: 15s)
 	attempts=0
 	until curl -s "http://${HOST}:${HTTP_PORT}" >/dev/null 2>&1; do
 		sleep 0.1
 		attempts=$((attempts + 1))
 		if ((attempts >= 150)); then
+			stop_spinner
 			echo "Error: Ace Stream engine failed to respond on port ${HTTP_PORT} within 15 seconds." >&2
 			exit 1
 		fi
@@ -85,7 +132,10 @@ fi
 stream_url="http://${HOST}:${HTTP_PORT}/ace/getstream?id=${clean_hash}"
 short_hash="${clean_hash:0:10}..."
 
-echo "Starting mpv..."
+spin "Starting mpv..."
+sleep 0.15
+stop_spinner
+
 mpv \
 	--no-resume-playback \
 	--title="Ace Stream: ${short_hash}" \
