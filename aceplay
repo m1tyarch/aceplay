@@ -45,14 +45,16 @@ spin() {
 	spinner_pid=$!
 }
 
-# Cleanup handler: stop spinner and container on exit or interrupt
+# Cleanup handler: stop spinner and container on exit
 cleanup() {
 	stop_spinner
 	if ((container_started)); then
 		(docker stop -t 1 "$CONTAINER_NAME" >/dev/null 2>&1 &)
 	fi
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # Function to clean stream hash using pure bash string manipulation
 clean_stream_hash() {
