@@ -6,9 +6,6 @@ HTTP_PORT="${ACESTREAM_PORT:-6878}"
 HOST="localhost"
 container_started=0
 spinner_pid=""
-watcher_pid=""
-lua_script=""
-spin_lock=""
 
 # Stop spinner animation, clear line and restore cursor
 stop_spinner() {
@@ -19,6 +16,17 @@ stop_spinner() {
 		if [[ -t 2 ]]; then
 			printf '\r\033[K\e[?25h' >&2
 		fi
+	fi
+}
+
+# Complete spinner step with a permanent checkmark line
+done_spinner() {
+	local msg="$1"
+	stop_spinner
+	if [[ -t 2 ]]; then
+		printf '✔ %s\n' "$msg" >&2
+	else
+		echo "✔ $msg" >&2
 	fi
 }
 
@@ -48,20 +56,9 @@ spin() {
 	spinner_pid=$!
 }
 
-# Cleanup handler: stop watcher, spinner, temp files, and container on exit
+# Cleanup handler: stop spinner and container on exit or interrupt
 cleanup() {
-	if [[ -n "$watcher_pid" ]]; then
-		kill "$watcher_pid" 2>/dev/null || true
-		wait "$watcher_pid" 2>/dev/null || true
-		watcher_pid=""
-	fi
 	stop_spinner
-	if [[ -n "$lua_script" && -f "$lua_script" ]]; then
-		rm -f "$lua_script"
-	fi
-	if [[ -n "$spin_lock" && -f "$spin_lock" ]]; then
-		rm -f "$spin_lock"
-	fi
 	if ((container_started)); then
 		(docker stop -t 1 "$CONTAINER_NAME" >/dev/null 2>&1 &)
 	fi
@@ -146,29 +143,8 @@ fi
 stream_url="http://${HOST}:${HTTP_PORT}/ace/getstream?id=${clean_hash}"
 short_hash="${clean_hash:0:10}..."
 
-# Setup temporary Lua trigger so mpv automatically stops the spinner on playback start
-lua_script="$(mktemp --suffix=.lua)"
-spin_lock="$(mktemp)"
-
-cat <<'EOF' >"$lua_script"
-mp.register_event("file-loaded", function()
-    local lock = mp.get_opt("spin_lock")
-    if lock and lock ~= "" then
-        os.remove(lock)
-    end
-end)
-EOF
-
-spin "Connecting to P2P peers & buffering stream..."
-
-# Background watcher: monitors the lock file and stops spinner the moment mpv starts playing
-(
-	while [[ -f "$spin_lock" ]] && kill -0 $$ 2>/dev/null; do
-		sleep 0.08
-	done
-	stop_spinner
-) &
-watcher_pid=$!
+# Transition cleanly to mpv without leaving stray background spinner output
+done_spinner "Engine ready. Connecting to stream and launching mpv..."
 
 mpv \
 	--no-resume-playback \
@@ -182,6 +158,6 @@ mpv \
 	--demuxer-max-bytes=200M \
 	--demuxer-readahead-secs=30 \
 	--cache-secs=30 \
-	--script="$lua_script" \
-	--script-opts="spin_lock=$spin_lock" \
+	--audio-buffer=1.0 \
+	--audio-stream-silence=yes \
 	"$stream_url"
