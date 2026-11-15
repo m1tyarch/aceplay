@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+CONTAINER_NAME="${ACESTREAM_CONTAINER:-acestream}"
+HTTP_PORT="${ACESTREAM_PORT:-6878}"
+HOST="localhost"
+
+# Cleanup handler: stop container on exit or interrupt
+cleanup() {
+	echo "Stopping Ace Stream container..."
+	docker stop "$CONTAINER_NAME" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT INT TERM
+
+# Get stream input from argument or prompt
+raw_input="${1:-}"
+if [[ -z "$raw_input" ]]; then
+	echo -n "Paste Ace Stream HASH or link and press Enter: "
+	read -r raw_input
+fi
+
+# Clean input (strip whitespace and acestream:// prefix)
+clean_hash=$(echo "$raw_input" | sed -e "s/^[ \t]*//" -e "s/[ \t]*$//" -e "s|^acestream://||")
+
+if [[ -z "$clean_hash" ]]; then
+	echo "Error: stream hash is empty." >&2
+	exit 1
+fi
+
+echo "Starting Ace Stream engine..."
+if ! docker start "$CONTAINER_NAME" >/dev/null 2>&1; then
+	echo "Error: Docker daemon is not running or container '$CONTAINER_NAME' not found." >&2
+	echo "Make sure Docker is running: sudo systemctl enable --now docker.socket" >&2
+	exit 1
+fi
+
+# Wait for HTTP API to respond (timeout: 15s)
+attempts=0
+until curl -s "http://${HOST}:${HTTP_PORT}" >/dev/null 2>&1; do
+	sleep 0.5
+	attempts=$((attempts + 1))
+	if ((attempts >= 30)); then
+		echo "Error: Ace Stream engine failed to respond on port ${HTTP_PORT} within 15 seconds." >&2
+		exit 1
+	fi
+done
+
+stream_url="http://${HOST}:${HTTP_PORT}/ace/getstream?id=${clean_hash}"
+
+echo "Starting mpv..."
+mpv \
+	--no-resume-playback \
+	--hwdec=vaapi \
+	--profile=fast \
+	--msg-level=ffmpeg=fatal \
+	--cache=yes \
+	--demuxer-max-bytes=200M \
+	--demuxer-readahead-secs=30 \
+	--cache-secs=30 \
+	"$stream_url"
