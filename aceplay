@@ -148,7 +148,6 @@ mpv \
 	--msg-level=ffmpeg=fatal \
 	--cache=yes \
 	--cache-pause-wait=3 \
-	--force-seekable=yes \
 	--demuxer-max-bytes=200M \
 	--demuxer-readahead-secs=30 \
 	--cache-secs=30 \
