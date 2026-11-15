@@ -4,11 +4,14 @@ set -euo pipefail
 CONTAINER_NAME="${ACESTREAM_CONTAINER:-acestream}"
 HTTP_PORT="${ACESTREAM_PORT:-6878}"
 HOST="localhost"
+container_started=0
 
 # Cleanup handler: stop container on exit or interrupt
 cleanup() {
-	echo "Stopping Ace Stream container..."
-	docker stop "$CONTAINER_NAME" >/dev/null 2>&1 || true
+	if ((container_started)); then
+		echo "Stopping Ace Stream container..."
+		docker stop -t 1 "$CONTAINER_NAME" >/dev/null 2>&1 || true
+	fi
 }
 trap cleanup EXIT INT TERM
 
@@ -33,6 +36,7 @@ if ! docker start "$CONTAINER_NAME" >/dev/null 2>&1; then
 	echo "Make sure Docker is running: sudo systemctl enable --now docker.socket" >&2
 	exit 1
 fi
+container_started=1
 
 # Wait for HTTP API to respond (timeout: 15s)
 attempts=0
